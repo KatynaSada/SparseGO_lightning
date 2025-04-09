@@ -1,0 +1,14 @@
+batch_size=550
+learning_rate=0.3
+optimizer_type=sgd
+decay_rate=0.02
+loss_type=MSELoss
+momentum=0.75
+num_neurons_per_GO=7
+num_neurons_final_GO=6
+drug_neurons=30
+num_neurons_final=12
+p_drop_genes=0.15
+p_drop_terms=0
+p_drop_drugs=0
+p_drop_final=0
