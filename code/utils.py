@@ -289,4 +289,4 @@ def get_compound_names(file_name):
             tokens = line.strip().split('\t')
             compounds.append([tokens[1], tokens[2]])
 
-    return c
+    return compounds
