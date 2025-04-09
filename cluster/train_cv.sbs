@@ -1,0 +1,24 @@
+#!/bin/bash
+#SBATCH --partition=general
+#SBATCH --qos=xlong
+#SBATCH --job-name=train_cv
+#SBATCH --gres=gpu:4
+#SBATCH --ntasks-per-node=8 # This needs to match Trainer(devices=...), must be number of gpus
+#SBATCH --constraint=a100-sxm4 # --constraint=rtx3090
+#SBATCH --mem=100gb
+#SBATCH --nodes=1 # This needs to match Trainer(num_nodes=...)
+#SBATCH --cpus-per-task=8 # total cpus = cpus-per-task*ntasks-per-node
+#SBATCH --output=/scratch/ksada/train_cv.out
+#SBATCH --mail-type=END
+#SBATCH --mail-user=ksada@unav.es
+ 
+echo `date`
+module load Python
+hostname
+
+echo train_CNN_autoencoder_light ...
+cd /scratch/ksada/SparseGO_lightning/cluster
+
+# Call the shell script to execute the training
+sh /scratch/ksada/SparseGO_lightning/cluster/train_cv.sh
+
