@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 import wandb
 from lightning.pytorch.loggers import WandbLogger
 
-# Ontology 
+# Ontology
 import networkx as nx
 import networkx.algorithms.components.connected as nxacc
 import networkx.algorithms.dag as nxadag
@@ -48,7 +48,7 @@ class SparseGO(LightningModule):
         self.fold = fold
         # Set the output folder path
         self.output_folder = output_folder + self.fold + "/"
-    
+
         # Model parameters
         self.num_neurons_per_GO = num_neurons_per_GO  # Number of neurons per GO term
         self.num_neurons_per_final_GO = num_neurons_per_final_GO  # Number of neurons in final GO layer
@@ -58,25 +58,25 @@ class SparseGO(LightningModule):
         self.p_drop_terms = p_drop_terms  # Dropout rate for terms
         self.p_drop_drugs = p_drop_drugs  # Dropout rate for drugs
         self.p_drop_final = p_drop_final  # Dropout rate for final layer
-        
+
         # Ontology structure
         self.input_type = input_type  # Type of input data (e.g., multiomics)
         self.layer_connections = layer_connections  # Connections between layers in the model
         self.gene2id_mapping_ont = gene2id_mapping_ont  # Mapping of genes to IDs for ontology
         self.gene_dim_ont = len(gene2id_mapping_ont)  # Dimension of gene mapping for ontology
-                
+
         # Training parameters
         self.initial_learning_rate = learning_rate  # Learning rate for the optimizer
         self.decay_rate = decay_rate  # Decay rate for learning
         self.optimizer_type = optimizer_type  # Type of optimizer to use
         self.momentum = momentum  # Momentum for the optimizer
         self.loss_type = loss_type  # Type of loss function to use
-        
+
         # Input data characteristics
         self.cell_features = cell_features  # Features for cell data
         self.drug_features = drug_features  # Features for drug data
         # self.cell_number = len(cell_features)  # Dimension of cell features
-        self.drug_dim = len(self.drug_features[0,:])  
+        self.drug_dim = len(self.drug_features[0,:])
 
         if os.environ.get("LOCAL_RANK")=="0":
             print(f"""
@@ -87,13 +87,13 @@ class SparseGO(LightningModule):
                 - Final GO term (num_neurons_per_final_GO): {num_neurons_per_final_GO}
                 - Final neurons (num_neurons_final): {num_neurons_final}
                 - Number of term-term hierarchy levels (len(layer_connections)): {len(layer_connections)}
-                
+
             Dropout rates:
                 - Genes (p_drop_genes): {p_drop_genes}
                 - Terms (p_drop_terms): {p_drop_terms}
                 - Drugs (p_drop_drugs): {p_drop_drugs}
                 - Final (p_drop_final): {p_drop_final}
-            
+
             Training parameters:
                 - Learning rate (learning_rate): {learning_rate}
                 - Decay rate (decay_rate): {decay_rate}
@@ -101,47 +101,47 @@ class SparseGO(LightningModule):
                 - Momentum (momentum): {momentum}
                 - Loss type (loss_type): {loss_type}
             """)
-            
+
         # Configure loss
         self.configure_loss()
-        
+
         # Intialize metrics
         self.initialize_metrics()
-        
+
         if self.input_type == "multiomics":
             self.gene_dim_multiomics = len(gene2id_mapping_multiomics)
             self.gene_dim_input = self.gene_dim_multiomics
             self.gene2id_mapping_multiomics = gene2id_mapping_multiomics
             self.genes_genes_pairs = genes_genes_pairs
-        
+
             # (0) Layer of genes with genes
             self.multiomics_layer(genes_genes_pairs, gene2id_mapping_ont, gene2id_mapping_multiomics)
         else:
             self.gene_dim_input = self.gene_dim_ont
-        
+
         # Define an example input array based on the input type and dimensions
         num_features = self.gene_dim_input + self.drug_dim
-        self.example_input_array = torch.randn(5, num_features) 
-        
+        self.example_input_array = torch.randn(5, num_features)
+
         # (1) Layer of genes with terms
         input_id = self.genes_layer(layer_connections[0],p_drop_genes, gene2id_mapping_ont)
-        
+
         # (2...) Layers of terms with terms
         for i in range(1,len(layer_connections)):
             if i == len(layer_connections)-1:
                 input_id = self.terms_layer(input_id, layer_connections[i], str(i),num_neurons_per_final_GO,p_drop_terms)
             else:
                 input_id = self.terms_layer(input_id, layer_connections[i], str(i),num_neurons_per_GO,p_drop_terms)
-        
+
         # Layers to process drugs
         self.construct_NN_drug(p_drop_drugs)
-        
+
         # Concatenate branches
         if len(num_neurons_drug)==0: # to concatenate directly the drugs layer
             final_input_size = num_neurons_per_final_GO + self.drug_dim
         else:
-            final_input_size = num_neurons_per_final_GO + num_neurons_drug[-1] 
-        self.final_batchnorm_layer = nn.BatchNorm1d(final_input_size) 
+            final_input_size = num_neurons_per_final_GO + num_neurons_drug[-1]
+        self.final_batchnorm_layer = nn.BatchNorm1d(final_input_size)
         self.drop_final = nn.Dropout(p_drop_final)
         self.final_linear_layer = nn.Linear(final_input_size, num_neurons_final)
         self.final_tanh = nn.Tanh()
@@ -150,15 +150,15 @@ class SparseGO(LightningModule):
         self.final_aux_linear_layer = nn.Linear(num_neurons_final,1)
         self.final_aux_tanh = nn.Tanh()
         self.final_linear_layer_output = nn.Linear(1, 1)
-        
+
         if os.environ.get("LOCAL_RANK")=="0":
             # Print details of linear layers in the model
             for name, layer in self.named_modules():
                 if hasattr(layer, 'in_features') and hasattr(layer, 'out_features'):
                     print(f"Layer Name: {name}\tInput Features: {layer.in_features}\tOutput Features: {layer.out_features}")
-        
+
         self.save_hyperparameters(logger=False)
-        
+
     def initialize_metrics(self):
 
         # Initialize train metrics
@@ -174,37 +174,37 @@ class SparseGO(LightningModule):
         self.validation_corr_sperman = MeanMetric()
         self.validation_corr_per_drug = MeanMetric()
         self.validation_corr_low = MeanMetric()
-        
+
         # Initialize test metrics
         self.test_loss = MeanMetric()
         self.test_corr_pearson = MeanMetric()
         self.test_corr_spearman = MeanMetric()
         self.test_corr_per_drug = MeanMetric()
         self.test_corr_low = MeanMetric()
-        
+
         self.all_test_outputs = []  # List to accumulate test outputs
-    
+
     def multiomics_layer(self, genes_genes_pairs, gene2id_mapping_ont, gene2id_mapping_multiomics):
         # Change genes of the ontology and genes on the input to its indexes
-        
+
         ids_ontology = [gene2id_mapping_ont[gene] for gene in genes_genes_pairs[:,1]] # rows
         ids_multiomics = [gene2id_mapping_multiomics[gene] for gene in genes_genes_pairs[:,0]] # columns
-        
+
         connections_layer = torch.stack((
-            torch.tensor(ids_ontology, device=self.device), 
+            torch.tensor(ids_ontology, device=self.device),
             torch.tensor(ids_multiomics, device=self.device)
         ))
 
         input_terms = len(gene2id_mapping_multiomics)
         output_terms = len(gene2id_mapping_ont)
-        
+
         self.genes_genes_sparse_linear = SparseLinearNew(input_terms, output_terms, connectivity=connections_layer)
         self.genes_genes_tanh = nn.Tanh()
         self.genes_genes_batchnorm = nn.BatchNorm1d(input_terms)
-           
+
     def genes_layer(self, genes_terms_pairs, p_drop_genes, gene2id):
         # Define the layer of terms with genes, each pair is repeated n times (for the n neurons)
-        
+
         term2id = create_index(genes_terms_pairs[:,0])
 
         self.term_dim = len(term2id)
@@ -215,7 +215,7 @@ class SparseGO(LightningModule):
 
         data = np.ones(len(rows))
 
-        # Create sparse matrix of terms connected to genes 
+        # Create sparse matrix of terms connected to genes
         genes_terms = sparse.coo_matrix((data, (rows, columns)), shape=(self.term_dim, self.gene_dim_ont))
 
         # Add n neurons to each term
@@ -241,7 +241,7 @@ class SparseGO(LightningModule):
         self.drop_0 = nn.Dropout(p_drop_genes)
 
         return term2id
-    
+
     def terms_layer(self, input_id, layer_pairs, number,neurons_per_GO,p_drop_terms):
 
         output_id = create_index(layer_pairs[:,0])
@@ -271,7 +271,7 @@ class SparseGO(LightningModule):
         self.add_module('GO_terms_tanh_'+number, nn.Tanh())
         self.add_module('GO_terms_batchnorm_'+number, nn.BatchNorm1d(input_terms))
         return output_id
-    
+
     def construct_NN_drug(self,p_drop_drugs):
         input_size = self.drug_dim  # Initialize input size based on drug dimensions
 
@@ -280,12 +280,12 @@ class SparseGO(LightningModule):
             self.add_module('drug_drop_' + str(i+1),nn.Dropout(p_drop_drugs)) # Add a dropout layer with the given probability to prevent overfitting
             self.add_module('drug_tanh_' + str(i+1), nn.Tanh())
             self.add_module('drug_batchnorm_layer_' + str(i+1), nn.BatchNorm1d(input_size)) # Add batch normalization to stabilize learning
-            
+
             # Update the input size for the next layer based on the current layer's number of neurons
             input_size = self.num_neurons_drug[i]
-            
+
     def forward(self, x):
-        if self.input_type in("mutations","expression"): 
+        if self.input_type in("mutations","expression"):
             gene_input = x.narrow(1, 0, self.gene_dim_ont) # features of genes (Returns a new tensor that is a narrowed version)
             drug_input = x.narrow(1, self.gene_dim_ont, self.drug_dim) # features of drugs
         elif self.input_type  == "multiomics":
@@ -294,7 +294,7 @@ class SparseGO(LightningModule):
             # (0) Layer of genes with genes + tanh
             # batch --> dropout --> dense --> activation
             gene_input = self.genes_genes_batchnorm(multiomic_input)
-            # gene_input = multiomic_input # Remove batchnorm 
+            # gene_input = multiomic_input # Remove batchnorm
             gene_input  = self.genes_genes_tanh(self.genes_genes_sparse_linear(gene_input))
 
         # define forward function for GO terms and genes #############################################
@@ -332,11 +332,11 @@ class SparseGO(LightningModule):
         output = self.final_aux_tanh(self.final_aux_linear_layer(output))
         final_output = self.final_linear_layer_output(output)
         return final_output
-            
+
     def on_train_epoch_start(self):
         # Record the start time of the epoch
         self.epoch_start_time = time.time()
-                
+
         # Calculate the new learning rate using the provided formula
         learning_rate = self.initial_learning_rate * (1 / (1 + self.decay_rate * self.current_epoch))  # or epoch * epoch
         # Apply the new learning rate to the optimizer
@@ -345,19 +345,19 @@ class SparseGO(LightningModule):
         # Optional: Print the new learning rate for debugging
         print(f'Epoch {self.current_epoch}: Learning rate adjusted to {learning_rate:.6f}')
     def training_step(self, train_batch, batch_idx):
-            
+
         start_time = time.time()
-        
-        input_data, labels = train_batch 
+
+        input_data, labels = train_batch
         features = self.build_input_vector(input_data)
-        
+
         outputs = self(features) # Forward pass
         loss = self.criterion(outputs,  labels)
-        
+
         end_time = time.time()
         load_time = end_time - start_time
         print(f"Batch {batch_idx} loaded and forward passed in {load_time:.4f} seconds with {self.trainer.datamodule.num_workers} workers.")
-        
+
         corr_pearson = pearson_corr(outputs, labels) # compute pearson correlation
         corr_spearman = spearman_corr(outputs.cpu().detach().numpy(), labels.cpu()) # compute spearman correlation
         corr_per_drug = per_drug_corr_spearman(input_data[:,1], outputs, labels) # REVISAAR
@@ -369,29 +369,29 @@ class SparseGO(LightningModule):
         self.train_corr_spearman(corr_spearman)
         self.train_corr_per_drug(corr_per_drug)
         self.train_corr_low(corr_low)
-        
+
         # Print device, batch index, loss, Spearman correlation, and correlation per drug in a single line
         print(f"{self.device}, Train Batch: {batch_idx}, Loss: {loss.detach():.4f}, "
               f"Spearman: {corr_spearman.detach():.4f}, "
               f"Correlation per Drug Mean: {corr_per_drug:.4f}", end=" --- ")
         print_tensor_info(features, "features")
-        
+
         return loss
-        
+
     def validation_step(self, val_batch, batch_idx):
-        
+
         start_time = time.time()
-        
-        input_data, labels = val_batch 
+
+        input_data, labels = val_batch
         features = self.build_input_vector(input_data)
-        
+
         outputs = self(features) # Forward pass
         loss = self.criterion(outputs,  labels)
-        
+
         end_time = time.time()
         load_time = end_time - start_time
         print(f"Batch {batch_idx} loaded and forward passed in {load_time:.4f} seconds with {self.trainer.datamodule.num_workers} workers.")
-        
+
         corr_pearson = pearson_corr(outputs, labels) # compute pearson correlation
         corr_spearman = spearman_corr(outputs.cpu().detach().numpy(), labels.cpu()) # compute spearman correlation
         corr_per_drug = per_drug_corr_spearman(input_data[:,1], outputs, labels) # REVISAAR
@@ -403,24 +403,24 @@ class SparseGO(LightningModule):
         self.validation_corr_sperman(corr_spearman)
         self.validation_corr_per_drug(corr_per_drug)
         self.validation_corr_low(corr_low)
-        
+
         # Print device, batch index, loss, Spearman correlation, and correlation per drug in a single line
         print(f"{self.device}, Val. Batch: {batch_idx}, Loss: {loss.detach():.4f}, "
               f"Spearman: {corr_spearman.detach():.4f}, "
               f"Correlation per Drug Mean: {corr_per_drug:.4f}", end=" --- ")
         print_tensor_info(features, "features")
-        
+
     def on_validation_epoch_end(self):
         # Skip logging and printing during validation sanity check
         if self.trainer.sanity_checking:
             return
-        
+
         # Compute average metrics from all batches
         avg_validation_loss = self.validation_loss.compute()
         avg_validation_corr_pearson = self.validation_corr_pearson.compute()
         avg_validation_corr_sperman = self.validation_corr_sperman.compute()
         avg_validation_corr_per_drug = self.validation_corr_per_drug.compute()
-        
+
         # Log training metrics
         self.log_dict({
             "training_loss": self.train_loss.compute(),  # Average training loss
@@ -437,7 +437,7 @@ class SparseGO(LightningModule):
         # Get the current device
         device = self.device  # Get the current device
         # Get the current epoch number
-        epoch = self.current_epoch  
+        epoch = self.current_epoch
 
         # Print metrics and device information in a single line
         print(f"Epoch end {epoch} | "
@@ -454,7 +454,7 @@ class SparseGO(LightningModule):
         # Optional: Print GPU memory info
         if self.trainer.local_rank==0:
             print_gpu_memory_info()
-        
+
         # Reset metrics for the next epoch
         self.train_loss.reset()
         self.train_corr_pearson.reset()
@@ -466,7 +466,7 @@ class SparseGO(LightningModule):
         self.validation_corr_sperman.reset()
         self.validation_corr_per_drug.reset()
         self.validation_corr_low.reset()
-        
+
         # Calculate and print the time taken for the epoch
         epoch_time = time.time() - self.epoch_start_time
         print(f"Epoch {epoch} took {epoch_time:.2f} seconds")
@@ -474,7 +474,7 @@ class SparseGO(LightningModule):
     def on_test_epoch_start(self):
         # Record the start time of the epoch
         self.epoch_start_time = time.time()
-        
+
         # Extract the metric from the checkpoint path
         if self.ckpt_path is not None:
             # Assuming the checkpoint path is structured like "output_folder/fold/best_model_d.ckpt"
@@ -482,27 +482,27 @@ class SparseGO(LightningModule):
             _, filename = os.path.split(self.ckpt_path)  # Get the filename from the path
             self.metric = filename.split('_')[-1].split('.')[0]  # Get the last part before the extension
         else:
-            self.metric = "other"  # Fallback if ckpt_path is not set   
-                         
+            self.metric = "other"  # Fallback if ckpt_path is not set
+
     def test_step(self, test_batch, batch_idx):
-        
+
         start_time = time.time()
-        
-        input_data, labels = test_batch 
+
+        input_data, labels = test_batch
         features = self.build_input_vector(input_data)
-        
+
         outputs = self(features) # Forward pass
         loss = self.criterion(outputs,  labels)
-        
+
         end_time = time.time()
         load_time = end_time - start_time
         print(f"Batch {batch_idx} loaded and forward passed in {load_time:.4f} seconds with {self.trainer.datamodule.num_workers} workers.")
-        
+
         corr_pearson = pearson_corr(outputs, labels) # compute pearson correlation
         corr_spearman = spearman_corr(outputs.cpu().detach().numpy(), labels.cpu()) # compute spearman correlation
         corr_per_drug = per_drug_corr_spearman(input_data[:,1], outputs, labels) # REVISAAR
         corr_low = low_corr(outputs, labels)
-        
+
         # Accumulate the outputs
         self.all_test_outputs.append(outputs.cpu().detach())
 
@@ -512,15 +512,15 @@ class SparseGO(LightningModule):
         self.test_corr_spearman(corr_spearman)
         self.test_corr_per_drug(corr_per_drug)
         self.test_corr_low(corr_low)
-        
+
         # Print device, batch index, loss, Spearman correlation, and correlation per drug in a single line
         print(f"{self.device}, Test Batch: {batch_idx}, Loss: {loss.detach():.4f}, "
               f"Spearman: {corr_spearman.detach():.4f}, "
               f"Correlation per Drug Mean: {corr_per_drug:.4f}", end=" --- ")
         print_tensor_info(features, "features")
-        
+
         return {"predictions": outputs, "labels": labels,"input_data":input_data}
-        
+
     def on_test_epoch_end(self):
         device = self.device  # Get the current device
         # Print metrics and device information in a single line
@@ -529,7 +529,7 @@ class SparseGO(LightningModule):
               f"Test Training Pearson Corr.: {self.test_corr_pearson.compute():.4f} | "
               f"Test Training Spearman Corr.: {self.test_corr_spearman.compute():.4f} | "
               f"Test Training Mean Corr. Per Drug: {self.test_corr_per_drug.compute():.4f} | ")
-        
+
         self.log_dict({
             "test_loss_" + self.metric: self.test_loss.compute(),  # Average training loss
             "test_corr_pearson_" + self.metric: self.test_corr_pearson.compute(),  # Average Pearson correlation
@@ -537,15 +537,15 @@ class SparseGO(LightningModule):
             "test_corr_per_drug_" + self.metric: self.test_corr_per_drug.compute(),  # Average correlation per drug
             "test_corr_low_" + self.metric :self.test_corr_low.compute(),  # Average low correlation metric
         }, on_epoch=True, prog_bar=False, sync_dist=True, on_step=False)
-        
+
         # Convert list of tensors to a single tensor
         all_test_outputs = torch.cat(self.all_test_outputs, dim=0)
 
         # Save the accumulated outputs to a file
-        np.savetxt(self.output_folder + self.metric + '_test_predictions.txt', 
-                   all_test_outputs.numpy(), 
+        np.savetxt(self.output_folder + self.metric + '_test_predictions.txt',
+                   all_test_outputs.numpy(),
                    fmt='%.5e')
-        
+
         # Reset metrics for the next epoch
         self.test_loss.reset()
         self.test_corr_pearson.reset()
@@ -553,7 +553,7 @@ class SparseGO(LightningModule):
         self.test_corr_per_drug.reset()
         self.test_corr_low.reset()
         self.all_test_outputs = []
-    
+
     def configure_optimizers(self):
         # falta añadir lo del learning rate, el decay_rate
         # Define the optimizer
@@ -562,7 +562,7 @@ class SparseGO(LightningModule):
         elif self.optimizer_type=='adam':
             optimizer = torch.optim.Adam(self.parameters(), lr=self.initial_learning_rate, betas=(0.9, 0.99), eps=1e-05)
         return optimizer
-    
+
     def configure_loss(self):
         # Define the loss criterion based on the configuration
         if self.loss_type=='MSELoss':
@@ -571,23 +571,23 @@ class SparseGO(LightningModule):
         elif self.loss_type=='L1Loss':
             self.criterion = nn.L1Loss()
             self.test_model = '/best_model_p.pt' # Test model is pearson
-       
+
     def build_input_vector(self, input_data):
         """
         Build an input vector for training by combining cell and drug features based on the input data.
 
         Parameters:
-        - input_data (torch.Tensor): A tensor containing indices that reference specific cell and drug features. 
-                                    Each row corresponds to a specific sample, where the first column 
-                                    contains the index for the cell features and the second column 
+        - input_data (torch.Tensor): A tensor containing indices that reference specific cell and drug features.
+                                    Each row corresponds to a specific sample, where the first column
+                                    contains the index for the cell features and the second column
                                     contains the index for the drug features.
 
         Returns:
-        - torch.Tensor: A tensor of shape (num_samples, num_features), where num_features is the 
-                        sum of the number of cell features and drug features. Each row corresponds 
+        - torch.Tensor: A tensor of shape (num_samples, num_features), where num_features is the
+                        sum of the number of cell features and drug features. Each row corresponds
                         to the combined features of a specific cell and drug pair.
         """
-    
+
         # Initialize a numpy array to hold the combined features for each input sample
         features = np.zeros((input_data.size()[0], (self.gene_dim_input + self.drug_dim)))
 
@@ -601,7 +601,7 @@ class SparseGO(LightningModule):
 
         # Convert the numpy array to a PyTorch tensor of type float
         features = torch.from_numpy(features).float().to(self.device)
-        
+
         # Return the constructed feature tensor
         return features
 
@@ -612,7 +612,7 @@ class SparseGOnometrics(LightningModule):
         self.fold = fold
         # Set the output folder path
         self.output_folder = output_folder + self.fold + "/"
-    
+
         # Model parameters
         self.num_neurons_per_GO = num_neurons_per_GO  # Number of neurons per GO term
         self.num_neurons_per_final_GO = num_neurons_per_final_GO  # Number of neurons in final GO layer
@@ -622,25 +622,25 @@ class SparseGOnometrics(LightningModule):
         self.p_drop_terms = p_drop_terms  # Dropout rate for terms
         self.p_drop_drugs = p_drop_drugs  # Dropout rate for drugs
         self.p_drop_final = p_drop_final  # Dropout rate for final layer
-        
+
         # Ontology structure
         self.input_type = input_type  # Type of input data (e.g., multiomics)
         self.layer_connections = layer_connections  # Connections between layers in the model
         self.gene2id_mapping_ont = gene2id_mapping_ont  # Mapping of genes to IDs for ontology
         self.gene_dim_ont = len(gene2id_mapping_ont)  # Dimension of gene mapping for ontology
-                
+
         # Training parameters
         self.initial_learning_rate = learning_rate  # Learning rate for the optimizer
         self.decay_rate = decay_rate  # Decay rate for learning
         self.optimizer_type = optimizer_type  # Type of optimizer to use
         self.momentum = momentum  # Momentum for the optimizer
         self.loss_type = loss_type  # Type of loss function to use
-        
+
         # Input data characteristics
         self.cell_features = cell_features  # Features for cell data
         self.drug_features = drug_features  # Features for drug data
         # self.cell_number = len(cell_features)  # Dimension of cell features
-        self.drug_dim = len(self.drug_features[0,:])  
+        self.drug_dim = len(self.drug_features[0,:])
 
         if os.environ.get("LOCAL_RANK")=="0":
             print(f"""
@@ -651,13 +651,13 @@ class SparseGOnometrics(LightningModule):
                 - Final GO term (num_neurons_per_final_GO): {num_neurons_per_final_GO}
                 - Final neurons (num_neurons_final): {num_neurons_final}
                 - Number of term-term hierarchy levels (len(layer_connections)): {len(layer_connections)}
-                
+
             Dropout rates:
                 - Genes (p_drop_genes): {p_drop_genes}
                 - Terms (p_drop_terms): {p_drop_terms}
                 - Drugs (p_drop_drugs): {p_drop_drugs}
                 - Final (p_drop_final): {p_drop_final}
-            
+
             Training parameters:
                 - Learning rate (learning_rate): {learning_rate}
                 - Decay rate (decay_rate): {decay_rate}
@@ -665,41 +665,41 @@ class SparseGOnometrics(LightningModule):
                 - Momentum (momentum): {momentum}
                 - Loss type (loss_type): {loss_type}
             """)
-        
+
         if self.input_type == "multiomics":
             self.gene_dim_multiomics = len(gene2id_mapping_multiomics)
             self.gene_dim_input = self.gene_dim_multiomics
             self.gene2id_mapping_multiomics = gene2id_mapping_multiomics
             self.genes_genes_pairs = genes_genes_pairs
-        
+
             # (0) Layer of genes with genes
             self.multiomics_layer(genes_genes_pairs, gene2id_mapping_ont, gene2id_mapping_multiomics)
         else:
             self.gene_dim_input = self.gene_dim_ont
-        
+
         # Define an example input array based on the input type and dimensions
         num_features = self.gene_dim_input + self.drug_dim
-        self.example_input_array = torch.randn(5, num_features) 
-        
+        self.example_input_array = torch.randn(5, num_features)
+
         # (1) Layer of genes with terms
         input_id = self.genes_layer(layer_connections[0],p_drop_genes, gene2id_mapping_ont)
-        
+
         # (2...) Layers of terms with terms
         for i in range(1,len(layer_connections)):
             if i == len(layer_connections)-1:
                 input_id = self.terms_layer(input_id, layer_connections[i], str(i),num_neurons_per_final_GO,p_drop_terms)
             else:
                 input_id = self.terms_layer(input_id, layer_connections[i], str(i),num_neurons_per_GO,p_drop_terms)
-        
+
         # Layers to process drugs
         self.construct_NN_drug(p_drop_drugs)
-        
+
         # Concatenate branches
         if len(num_neurons_drug)==0: # to concatenate directly the drugs layer
             final_input_size = num_neurons_per_final_GO + self.drug_dim
         else:
-            final_input_size = num_neurons_per_final_GO + num_neurons_drug[-1] 
-        self.final_batchnorm_layer = nn.BatchNorm1d(final_input_size) 
+            final_input_size = num_neurons_per_final_GO + num_neurons_drug[-1]
+        self.final_batchnorm_layer = nn.BatchNorm1d(final_input_size)
         self.drop_final = nn.Dropout(p_drop_final)
         self.final_linear_layer = nn.Linear(final_input_size, num_neurons_final)
         self.final_tanh = nn.Tanh()
@@ -708,36 +708,36 @@ class SparseGOnometrics(LightningModule):
         self.final_aux_linear_layer = nn.Linear(num_neurons_final,1)
         self.final_aux_tanh = nn.Tanh()
         self.final_linear_layer_output = nn.Linear(1, 1)
-        
+
         if os.environ.get("LOCAL_RANK")=="0":
             # Print details of linear layers in the model
             for name, layer in self.named_modules():
                 if hasattr(layer, 'in_features') and hasattr(layer, 'out_features'):
                     print(f"Layer Name: {name}\tInput Features: {layer.in_features}\tOutput Features: {layer.out_features}")
-        
+
         self.save_hyperparameters(logger=False)
-    
+
     def multiomics_layer(self, genes_genes_pairs, gene2id_mapping_ont, gene2id_mapping_multiomics):
         # Change genes of the ontology and genes on the input to its indexes
-        
+
         ids_ontology = [gene2id_mapping_ont[gene] for gene in genes_genes_pairs[:,1]] # rows
         ids_multiomics = [gene2id_mapping_multiomics[gene] for gene in genes_genes_pairs[:,0]] # columns
-        
+
         connections_layer = torch.stack((
-            torch.tensor(ids_ontology, device=self.device), 
+            torch.tensor(ids_ontology, device=self.device),
             torch.tensor(ids_multiomics, device=self.device)
         ))
 
         input_terms = len(gene2id_mapping_multiomics)
         output_terms = len(gene2id_mapping_ont)
-        
+
         self.genes_genes_sparse_linear = SparseLinearNew(input_terms, output_terms, connectivity=connections_layer)
         self.genes_genes_tanh = nn.Tanh()
         self.genes_genes_batchnorm = nn.BatchNorm1d(input_terms)
-           
+
     def genes_layer(self, genes_terms_pairs, p_drop_genes, gene2id):
         # Define the layer of terms with genes, each pair is repeated n times (for the n neurons)
-        
+
         term2id = create_index(genes_terms_pairs[:,0])
 
         self.term_dim = len(term2id)
@@ -748,7 +748,7 @@ class SparseGOnometrics(LightningModule):
 
         data = np.ones(len(rows))
 
-        # Create sparse matrix of terms connected to genes 
+        # Create sparse matrix of terms connected to genes
         genes_terms = sparse.coo_matrix((data, (rows, columns)), shape=(self.term_dim, self.gene_dim_ont))
 
         # Add n neurons to each term
@@ -774,7 +774,7 @@ class SparseGOnometrics(LightningModule):
         self.drop_0 = nn.Dropout(p_drop_genes)
 
         return term2id
-    
+
     def terms_layer(self, input_id, layer_pairs, number,neurons_per_GO,p_drop_terms):
 
         output_id = create_index(layer_pairs[:,0])
@@ -804,7 +804,7 @@ class SparseGOnometrics(LightningModule):
         self.add_module('GO_terms_tanh_'+number, nn.Tanh())
         self.add_module('GO_terms_batchnorm_'+number, nn.BatchNorm1d(input_terms))
         return output_id
-    
+
     def construct_NN_drug(self,p_drop_drugs):
         input_size = self.drug_dim  # Initialize input size based on drug dimensions
 
@@ -813,12 +813,12 @@ class SparseGOnometrics(LightningModule):
             self.add_module('drug_drop_' + str(i+1),nn.Dropout(p_drop_drugs)) # Add a dropout layer with the given probability to prevent overfitting
             self.add_module('drug_tanh_' + str(i+1), nn.Tanh())
             self.add_module('drug_batchnorm_layer_' + str(i+1), nn.BatchNorm1d(input_size)) # Add batch normalization to stabilize learning
-            
+
             # Update the input size for the next layer based on the current layer's number of neurons
             input_size = self.num_neurons_drug[i]
-            
+
     def forward(self, x):
-        if self.input_type in("mutations","expression"): 
+        if self.input_type in("mutations","expression"):
             gene_input = x.narrow(1, 0, self.gene_dim_ont) # features of genes (Returns a new tensor that is a narrowed version)
             drug_input = x.narrow(1, self.gene_dim_ont, self.drug_dim) # features of drugs
         elif self.input_type  == "multiomics":
@@ -827,7 +827,7 @@ class SparseGOnometrics(LightningModule):
             # (0) Layer of genes with genes + tanh
             # batch --> dropout --> dense --> activation
             gene_input = self.genes_genes_batchnorm(multiomic_input)
-            # gene_input = multiomic_input # Remove batchnorm 
+            # gene_input = multiomic_input # Remove batchnorm
             gene_input  = self.genes_genes_tanh(self.genes_genes_sparse_linear(gene_input))
 
         # define forward function for GO terms and genes #############################################
@@ -865,11 +865,11 @@ class SparseGOnometrics(LightningModule):
         output = self.final_aux_tanh(self.final_aux_linear_layer(output))
         final_output = self.final_linear_layer_output(output)
         return final_output
-            
+
     def on_train_epoch_start(self):
         # Record the start time of the epoch
         self.epoch_start_time = time.time()
-                
+
         # Calculate the new learning rate using the provided formula
         learning_rate = self.initial_learning_rate * (1 / (1 + self.decay_rate * self.current_epoch))  # or epoch * epoch
         # Apply the new learning rate to the optimizer
@@ -877,11 +877,11 @@ class SparseGOnometrics(LightningModule):
 
         # Optional: Print the new learning rate for debugging
         print(f'Epoch {self.current_epoch}: Learning rate adjusted to {learning_rate:.6f}')
-    
+
     def on_test_epoch_start(self):
         # Record the start time of the epoch
         self.epoch_start_time = time.time()
-        
+
         # Extract the metric from the checkpoint path
         if self.ckpt_path is not None:
             # Assuming the checkpoint path is structured like "output_folder/fold/best_model_d.ckpt"
@@ -889,7 +889,7 @@ class SparseGOnometrics(LightningModule):
             _, filename = os.path.split(self.ckpt_path)  # Get the filename from the path
             self.metric = filename.split('_')[-1].split('.')[0]  # Get the last part before the extension
         else:
-            self.metric = "other"  # Fallback if ckpt_path is not set   
+            self.metric = "other"  # Fallback if ckpt_path is not set
 
     def configure_optimizers(self):
         # falta añadir lo del learning rate, el decay_rate
@@ -899,23 +899,23 @@ class SparseGOnometrics(LightningModule):
         elif self.optimizer_type=='adam':
             optimizer = torch.optim.Adam(self.parameters(), lr=self.initial_learning_rate, betas=(0.9, 0.99), eps=1e-05)
         return optimizer
-    
+
     def build_input_vector(self, input_data):
         """
         Build an input vector for training by combining cell and drug features based on the input data.
 
         Parameters:
-        - input_data (torch.Tensor): A tensor containing indices that reference specific cell and drug features. 
-                                    Each row corresponds to a specific sample, where the first column 
-                                    contains the index for the cell features and the second column 
+        - input_data (torch.Tensor): A tensor containing indices that reference specific cell and drug features.
+                                    Each row corresponds to a specific sample, where the first column
+                                    contains the index for the cell features and the second column
                                     contains the index for the drug features.
 
         Returns:
-        - torch.Tensor: A tensor of shape (num_samples, num_features), where num_features is the 
-                        sum of the number of cell features and drug features. Each row corresponds 
+        - torch.Tensor: A tensor of shape (num_samples, num_features), where num_features is the
+                        sum of the number of cell features and drug features. Each row corresponds
                         to the combined features of a specific cell and drug pair.
         """
-    
+
         # Initialize a numpy array to hold the combined features for each input sample
         features = np.zeros((input_data.size()[0], (self.gene_dim_input + self.drug_dim)))
 
@@ -929,10 +929,10 @@ class SparseGOnometrics(LightningModule):
 
         # Convert the numpy array to a PyTorch tensor of type float
         features = torch.from_numpy(features).float().to(self.device)
-        
+
         # Return the constructed feature tensor
         return features
-    
+
     def configure_loss(self):
         # Define the loss criterion based on the configuration
         if self.loss_type=='MSELoss':
@@ -946,16 +946,16 @@ class SparseGODataModule(LightningDataModule):
 
     def __init__(self, input_folder, fold, input_type, cell2id_mapping_file, drug2id_mapping_file, gene2id_mapping_ont_file, ontology_file, genotype_file, fingerprint_file, train_file, val_file, test_file, multiomics_layer, gene2id_mapping_multiomics_file="None", batch_size=1000, num_workers=4):
         super().__init__()
-        
+
         # Set the input folder path
         self.fold = fold
         self.input_folder = input_folder + self.fold + "/"
         self.input_type = input_type
-        
+
         # Set batch size and number of workers
         self.batch_size = batch_size
         self.num_workers = num_workers
-        
+
         # Set file paths for mappings and data
         self.cell2id_mapping = self.load_mapping(self.input_folder + cell2id_mapping_file)  # Load cell to ID mapping
         self.drug2id_mapping = self.load_mapping(self.input_folder + drug2id_mapping_file)  # Load drug to ID mapping
@@ -966,15 +966,15 @@ class SparseGODataModule(LightningDataModule):
         self.train_file = self.input_folder + train_file  # Path for training data
         self.val_file = self.input_folder + val_file  # Path for validation data
         self.test_file = self.input_folder + test_file  # Path for test data
-        
+
         # Multiomics settings
         if self.input_type == "multiomics":
             self.gene2id_mapping_multiomics_file = self.input_folder + gene2id_mapping_multiomics_file  # Path for multiomics gene to ID mapping
             self.multiomics_layer_file = self.input_folder + multiomics_layer  # Path for multiomics layer file
-        
+
     def prepare_data(self):
         print("Preparing data...")
-        
+
         # Load ontology: create the graph of connected GO terms
         since1 = time.time()
         self.gene2id_mapping_ont = self.load_mapping(self.gene2id_mapping_ont_file)
@@ -982,7 +982,7 @@ class SparseGODataModule(LightningDataModule):
         time_elapsed1 = time.time() - since1
         print('Load ontology complete in {:.0f}m {:.0f}s'.format(
         time_elapsed1 // 60, time_elapsed1 % 60))
-        
+
         # Layer connections contains the pairs on each layer (including virtual nodes)
         since2 = time.time()
         sorted_pairs, level_list, level_number = sort_pairs(genes_terms_pairs, terms_pairs, dG, self.gene2id_mapping_ont)
@@ -990,12 +990,12 @@ class SparseGODataModule(LightningDataModule):
         time_elapsed2 = time.time() - since2
         print('\nLayer connections complete in {:.0f}m {:.0f}s'.format(
         time_elapsed2 // 60, time_elapsed2 % 60))
-        
+
         # Load cell/drug features
         self.cell_features = np.genfromtxt(self.genotype_file, delimiter=',')
         self.drug_features = np.genfromtxt(self.fingerprint_file, delimiter=',')
         self.drug_dim = len(self.drug_features[0,:])
-        
+
         # For the multiomics network
         if self.input_type == "multiomics":
             self.gene2id_mapping_multiomics = self.load_mapping(self.gene2id_mapping_multiomics_file)  # Load multiomics gene to ID mapping
@@ -1008,7 +1008,7 @@ class SparseGODataModule(LightningDataModule):
         '''called on each GPU separately - stage defines if we are at fit or test step'''
         # we set up only relevant datasets when stage is specified (automatically set by Pytorch-Lightning)
         if stage == 'fit' or stage is None:
-        
+
             self.train_data = self.prepare_features_and_labels(self.train_file)
             self.val_data = self.prepare_features_and_labels(self.val_file)
 
@@ -1016,18 +1016,18 @@ class SparseGODataModule(LightningDataModule):
             if self.trainer.is_global_zero:
                 print("Train set shape: Features = {}, Samples = {}".format(self.train_data[0].shape, len(self.train_data)))
                 print("Validation set shape: Features = {}, Samples = {}".format(self.val_data[0].shape, len(self.val_data)))
-                
+
 
         if stage == 'test' or stage is None:
 
             self.test_data = self.prepare_features_and_labels(self.test_file)
-            
+
             if self.trainer.is_global_zero:
                 print("Test set shape: Features = {}, Samples = {}".format(self.test_data[0].shape, len(self.test_data)))
-                       
+
     def prepare_features_and_labels(self, file_name):
         """
-        Loads training data from a specified file and maps cell and drug identifiers 
+        Loads training data from a specified file and maps cell and drug identifiers
         to their corresponding IDs using the provided mappings in this data module.
 
         Parameters
@@ -1038,14 +1038,14 @@ class SparseGODataModule(LightningDataModule):
         Returns
         -------
         feature: torch.Tensor
-            A tensor containing features for each training example, where each feature is a 
+            A tensor containing features for each training example, where each feature is a
             list consisting of [cell_id, drug_id].
 
         label: torch.Tensor
-            A tensor containing labels for each training example, where each label is a 
+            A tensor containing labels for each training example, where each label is a
             list consisting of the target values.
         """
-        
+
         feature = []  # Initialize an empty list to hold features
         label = []    # Initialize an empty list to hold labels
 
@@ -1055,7 +1055,7 @@ class SparseGODataModule(LightningDataModule):
             for line in fi:
                 # Strip whitespace and split the line into tokens based on tab characters
                 tokens = line.strip().split('\t')
-                
+
                 # Process the line based on the number of tokens
                 if len(tokens) == 3:
                     # If there are three tokens, append the corresponding IDs and label
@@ -1071,10 +1071,10 @@ class SparseGODataModule(LightningDataModule):
 
     def load_mapping(self, mapping_file):
         """
-        Opens a txt file with two columns and saves the second column as the key of the dictionary 
+        Opens a txt file with two columns and saves the second column as the key of the dictionary
         and the first column as a value.
         """
-        
+
         # Initialize an empty dictionary to hold the mapping
         mapping = {}  # Dictionary that will store the mapping from the file
 
@@ -1084,7 +1084,7 @@ class SparseGODataModule(LightningDataModule):
             for line in file_handle:
                 # Remove trailing whitespace and split the line into columns based on whitespace
                 line = line.rstrip().split()  # Split the line into a list; e.g., ['3007', 'ZMYND8']
-                
+
                 # Save the second column (gene/drug name) as the key and the first column (index) as the value
                 mapping[line[1]] = int(line[0])  # Key is the gene/drug name; value is the index as an integer
 
@@ -1094,9 +1094,9 @@ class SparseGODataModule(LightningDataModule):
         '''returns training dataloader'''
         start_time = time.time()
         train_feature, train_label  = self.train_data
-        train_data_loader = DataLoader(du.TensorDataset(train_feature,train_label), 
-                                       batch_size=self.batch_size, 
-                                       num_workers=self.num_workers, # Can't pin memory because it is not available for sparseCUDA 
+        train_data_loader = DataLoader(du.TensorDataset(train_feature,train_label),
+                                       batch_size=self.batch_size,
+                                       num_workers=self.num_workers, # Can't pin memory because it is not available for sparseCUDA
                                        )
         end_time = time.time()
         # print(f"Train DataLoader created with {self.num_workers} workers in {end_time - start_time:.2f} seconds.")
@@ -1106,8 +1106,8 @@ class SparseGODataModule(LightningDataModule):
         '''returns validation dataloader'''
         start_time = time.time()
         val_feature, val_label   = self.val_data
-        val_data_loader = DataLoader(du.TensorDataset(val_feature,val_label), 
-                                     batch_size=self.batch_size, 
+        val_data_loader = DataLoader(du.TensorDataset(val_feature,val_label),
+                                     batch_size=self.batch_size,
                                      num_workers=self.num_workers,
                                      )
         end_time = time.time()
@@ -1119,7 +1119,7 @@ class SparseGODataModule(LightningDataModule):
         start_time = time.time()
         test_feature, test_label   = self.test_data
         test_data_loader = DataLoader(
-        du.TensorDataset(test_feature, test_label), 
+        du.TensorDataset(test_feature, test_label),
         batch_size=10000,  # Use a large batch size to ensure all samples are included for predictions.
                         # This is essential for making the test results comparable, as smaller batch sizes can lead to insufficient data for some drugs.
         num_workers=self.num_workers,
@@ -1127,7 +1127,7 @@ class SparseGODataModule(LightningDataModule):
 
         end_time = time.time()
         # print(f"Test DataLoader created with {self.num_workers} workers in {end_time - start_time:.2f} seconds.")
-        return test_data_loader 
+        return test_data_loader
 
     def load_ontology(self, ontology_file, gene2id_mapping):
         """
@@ -1247,10 +1247,10 @@ if __name__ == "__main__":
     # 1. Argument parser setup
     mac = "/Users/katyna/Library/CloudStorage/OneDrive----/"
     windows = "C:/Users/ksada/OneDrive - Tecnun/"
-    manitou = "/manitou/pmg/users/ks4237/" 
+    manitou = "/manitou/pmg/users/ks4237/"
     atlas = "/scratch/ksada/"
     computer = mac # CHANGE
-    
+
     input_folder = computer + "SparseGO_lightning/data/PDCs_multiomics_LELO/"
     output_folder = computer+ "SparseGO_lightning/results/PDCs_multiomics_LELO/"
 
@@ -1265,7 +1265,7 @@ if __name__ == "__main__":
     parser.add_argument('-output_folder', help='Directory containing the folders that have the resulting models', type=str, default=output_folder)
     parser.add_argument('-fold', help='Folder to analyze', type=str, default="samples2")
 
-    parser.add_argument('-train', help='Training dataset', type=str, default="sparseGO_train.txt") 
+    parser.add_argument('-train', help='Training dataset', type=str, default="sparseGO_train.txt")
     parser.add_argument('-validation', help='Validation dataset', type=str, default="sparseGO_val.txt")
     parser.add_argument('-test', help='Dataset to be predicted', type=str, default="sparseGO_test.txt")
 
@@ -1303,7 +1303,7 @@ if __name__ == "__main__":
         'SLURM_NTASKS': 'None'
     }
 
-    # Print the values 
+    # Print the values
     print("\nEnvironment variables:")
     for var in env_vars.keys():
         # Use get() to avoid KeyError
@@ -1390,7 +1390,7 @@ if __name__ == "__main__":
 
     # Now you can use the hyperparameters in your config
     config = sweep_config_1["parameters"]
-    
+
     #  Example of setting values from the hyperparameters
     config["batch_size"]['value'] = int(hyperparameters["batch_size"])
     config["learning_rate"]['value'] = float(hyperparameters["learning_rate"])
@@ -1404,31 +1404,31 @@ if __name__ == "__main__":
     config["p_drop_terms"]['value'] = float(hyperparameters["p_drop_terms"])
     config["p_drop_drugs"]['value'] = float(hyperparameters["p_drop_drugs"])
     config["p_drop_final"]['value'] = float(hyperparameters["p_drop_final"])
-    
+
     if len(config["drug_neurons"]['value']) == 0:
         # Add "no_drugs_branch" tag if the condition is met
         opt.tags.append("no_drugs_branch")
-        
+
     fold = opt.fold
     # Configure the sweep – specify the parameters to search through, the search strategy, the optimization metric et all.
     wandb_logger = WandbLogger(log_model=True, project=opt.project, name=fold, tags=opt.tags, job_type=opt.job_type, checkpoint_name="checkpoint_callback_d")
 
     # Initialize your criterion and data module
     sparseGO_data = SparseGODataModule(
-        input_folder=opt.input_folder, 
-        fold=fold, 
-        input_type=opt.input_type, 
-        cell2id_mapping_file=opt.cell2id, 
-        drug2id_mapping_file=opt.drug2id, 
-        gene2id_mapping_ont_file=opt.gene2id_ont, 
-        ontology_file=opt.ontology, 
-        genotype_file=opt.genotype, 
-        fingerprint_file=opt.fingerprint, 
-        train_file=opt.train, 
-        val_file=opt.validation, 
-        test_file=opt.test, 
-        multiomics_layer=opt.multiomics_layer, 
-        gene2id_mapping_multiomics_file=opt.gene2id_multiomics, 
+        input_folder=opt.input_folder,
+        fold=fold,
+        input_type=opt.input_type,
+        cell2id_mapping_file=opt.cell2id,
+        drug2id_mapping_file=opt.drug2id,
+        gene2id_mapping_ont_file=opt.gene2id_ont,
+        ontology_file=opt.ontology,
+        genotype_file=opt.genotype,
+        fingerprint_file=opt.fingerprint,
+        train_file=opt.train,
+        val_file=opt.validation,
+        test_file=opt.test,
+        multiomics_layer=opt.multiomics_layer,
+        gene2id_mapping_multiomics_file=opt.gene2id_multiomics,
         batch_size=config["batch_size"]['value'],  # Use the configured batch size
         num_workers=opt.num_workers
     )
@@ -1436,30 +1436,30 @@ if __name__ == "__main__":
 
     # Initialize your model with values from the config and hyperparameters
     model = SparseGO(
-        output_folder=opt.output_folder, 
-        fold=sparseGO_data.fold, 
-        input_type=sparseGO_data.input_type, 
-        num_neurons_per_GO=config["num_neurons_per_GO"]['value'], 
-        num_neurons_per_final_GO=config["num_neurons_final_GO"]['value'],  
-        num_neurons_drug=config["drug_neurons"]['value'],   
-        num_neurons_final=config["num_neurons_final"]['value'],  
-        layer_connections=sparseGO_data.layer_connections, 
-        gene2id_mapping_ont=sparseGO_data.gene2id_mapping_ont,  
-        p_drop_final=config["p_drop_final"]['value'],  
-        p_drop_genes=config["p_drop_genes"]['value'],  
-        p_drop_terms=config["p_drop_terms"]['value'],  
-        p_drop_drugs=config["p_drop_drugs"]['value'],  
-        learning_rate=config["learning_rate"]['value'],  
+        output_folder=opt.output_folder,
+        fold=sparseGO_data.fold,
+        input_type=sparseGO_data.input_type,
+        num_neurons_per_GO=config["num_neurons_per_GO"]['value'],
+        num_neurons_per_final_GO=config["num_neurons_final_GO"]['value'],
+        num_neurons_drug=config["drug_neurons"]['value'],
+        num_neurons_final=config["num_neurons_final"]['value'],
+        layer_connections=sparseGO_data.layer_connections,
+        gene2id_mapping_ont=sparseGO_data.gene2id_mapping_ont,
+        p_drop_final=config["p_drop_final"]['value'],
+        p_drop_genes=config["p_drop_genes"]['value'],
+        p_drop_terms=config["p_drop_terms"]['value'],
+        p_drop_drugs=config["p_drop_drugs"]['value'],
+        learning_rate=config["learning_rate"]['value'],
         decay_rate=config["decay_rate"]['value'],  # Assuming decay_rate is defined elsewhere
-        optimizer_type=config["optimizer"]['value'],  
-        momentum=config["momentum"]['value'],  
+        optimizer_type=config["optimizer"]['value'],
+        momentum=config["momentum"]['value'],
         loss_type=config["loss_type"]['value'],  # Assuming loss_type is defined elsewhere
         cell_features=sparseGO_data.cell_features,  # Assuming cell_features is defined elsewhere
         drug_features=sparseGO_data.drug_features,  # Assuming drug_features is defined elsewhere
         genes_genes_pairs=sparseGO_data.genes_genes_pairs,  # Optional, set to None
         gene2id_mapping_multiomics=sparseGO_data.gene2id_mapping_multiomics  # Optional, set to None
     )
-    
+
     if os.environ.get("LOCAL_RANK")=="0":
         wandb_logger.experiment.config["batch_size"] = config["batch_size"]['value']
         wandb_logger.experiment.config["learning_rate"] = config["learning_rate"]['value']
@@ -1482,7 +1482,7 @@ if __name__ == "__main__":
         wandb_logger.experiment.config["strategy"] = opt.strategy
         wandb_logger.experiment.config["input_type"] = opt.input_type
         wandb_logger.experiment.config["fold"] = sparseGO_data.fold
-    
+
     # Define the EarlyStopping callback
     opt.patience=25
     early_stopping = EarlyStopping(
@@ -1504,7 +1504,7 @@ if __name__ == "__main__":
         enable_version_counter=False,
         save_weights_only=False
     )
-    
+
     checkpoint_callback_s = ModelCheckpoint(
         monitor='validation_corr_spearman',  # Replace with your metric
         dirpath=opt.output_folder+fold,  # Custom directory for checkpoints
@@ -1515,7 +1515,7 @@ if __name__ == "__main__":
         enable_version_counter=False,
         save_weights_only=False
     )
-    
+
     trainer = Trainer(
         accelerator="cpu",                # Use CPU
         #accelerator="gpu",                # Use GPU
@@ -1556,26 +1556,29 @@ if __name__ == "__main__":
     )
 
     trainer.fit(model, sparseGO_data)
-    
+
     # artifact = wandb.Artifact("means_spearman_drug",type="drug means")
     # artifact.add_file(output_folder+'spearman_means.txt')
     # run.log_artifact(artifact)
-    
+
     # artifact = wandb.Artifact("means_spearman_drug",type="drug means")
     # artifact.add_file(output_folder+'spearman_means.txt')
     # run.log_artifact(artifact)
-    
+
     # create the model
-    # filepath = opt.output_folder+fold+"model.onnx"    
+    # filepath = opt.output_folder+fold+"model.onnx"
     # torch.onnx.dynamo_export(model,model.example_input_array)
-    
+
     # trainer = Trainer(
     #     accelerator="gpu",                # Use GPU
     #     devices= 1, # Extract GPUs per node int(os.environ.get('SLURM_NTASKS'))
     #     num_nodes= 1,  # Extract number of nodes int(os.environ.get('SLURM_JOB_NUM_NODES', 1))
     #     logger=wandb_logger,             # Logger for tracking experiments
-    # ) 
+    # )
     model.ckpt_path = opt.output_folder+fold+"/best_model_d.ckpt"
+    model.load_from_checkpoint(model.ckpt_path)
     trainer.test(model, sparseGO_data)
+
     model.ckpt_path = opt.output_folder+fold+"/best_model_s.ckpt"
+    model.load_from_checkpoint(model.ckpt_path)
     trainer.test(model, sparseGO_data)
