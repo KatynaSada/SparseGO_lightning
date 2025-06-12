@@ -1576,9 +1576,7 @@ if __name__ == "__main__":
     #     logger=wandb_logger,             # Logger for tracking experiments
     # )
     model.ckpt_path = opt.output_folder+fold+"/best_model_d.ckpt"
-    model.load_from_checkpoint(model.ckpt_path)
     trainer.test(model, sparseGO_data)
 
     model.ckpt_path = opt.output_folder+fold+"/best_model_s.ckpt"
-    model.load_from_checkpoint(model.ckpt_path)
     trainer.test(model, sparseGO_data)
